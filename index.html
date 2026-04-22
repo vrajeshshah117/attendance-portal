@@ -78,6 +78,7 @@ tr:hover td{background:#fafafa}
 .mod-header{background:#f9f0ff;border:1px solid #ce93d8;border-radius:8px;padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px}
 .filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
 .filter-bar select{padding:5px 8px;border:1px solid #d0d0d0;border-radius:5px;font-size:12px;font-family:Segoe UI,sans-serif;background:#fff}
+/* punch card */
 .punch-card{border:1px solid #e0e0e0;border-radius:8px;padding:20px;text-align:center;background:#fafafa;margin-bottom:16px}
 .punch-time{font-size:32px;font-weight:700;color:#1a1a1a;letter-spacing:1px;margin:8px 0 4px}
 .punch-date{font-size:12px;color:#888;margin-bottom:16px}
@@ -93,6 +94,7 @@ tr:hover td{background:#fafafa}
 </style>
 </head>
 <body>
+
 <div id="login-root">
 <div class="login-wrap">
 <div class="login-card">
@@ -121,6 +123,7 @@ tr:hover td{background:#fafafa}
 </div>
 </div>
 </div>
+
 <div id="app-root">
 <div class="app">
   <div class="header">
@@ -141,18 +144,19 @@ tr:hover td{background:#fafafa}
   <div id="page-content"></div>
 </div>
 </div>
+
 <script>
 /* ═══════════════════════════════════════════════════════════════
-   CONFIGURATION — Update these values for your SharePoint site
+   CONFIGURATION — GitHub-based shared storage
+   Replace GH_TOKEN with your Personal Access Token
    ═══════════════════════════════════════════════════════════════ */
 const CONFIG={
-  SP_SITE_URL:'https://rilcloud.sharepoint.com/sites/JobussAttendancePortal',
-  SP_LIBRARY:'Shared Documents',
-  SP_FOLDER:'AttendancePortal',
-  SP_FILENAME:'attendance_data.json',
-  DEMO_MODE:false  /* Set to true for local testing without SharePoint */
+  GH_OWNER:'vrajeshshah117',
+  GH_REPO:'attendance-portal',
+  GH_FILE:'attendance_data.json',
+  GH_BRANCH:'main',
+  GH_TOKEN:'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'
 };
-/* ═══════════════════════════════════════════════════════════════ */
 
 const USERS={
   'VRAJESH.S':{id:'VRAJESH.S',name:'Vrajesh Shah',role:'moderator',pw:'Vrajesh@2025'},
@@ -173,30 +177,61 @@ const USERS={
   'RAJENDRA.Z':{id:'RAJENDRA.Z',name:'Rajendra Zaveri',role:'manager',pw:'Rajendra@2025',team:['KUSHAL.J'],teamName:'Billing',clBalance:12},
   'ANAND.S':{id:'ANAND.S',name:'Anand Sharma',role:'manager',pw:'Anand@2025',team:['HEMRAJ.S'],teamName:'Strategy & Planning',clBalance:12}
 };
+
 function getAllEmpIds(){return Object.values(USERS).filter(u=>u.role==='employee').map(u=>u.id);}
+
 let state={attendance:{},leaves:{},balances:{},passwords:{},punches:{}};
 let currentUser=null;
 let clockInterval=null;
-async function spLoad(){
-  if(CONFIG.DEMO_MODE)return;
+
+// ── Storage (GitHub API — shared across all users) ───────
+let fileSHA=null;
+
+async function ghLoad(){
   try{
-    const r=await fetch(`${CONFIG.SP_SITE_URL}/_api/web/GetFolderByServerRelativeUrl('${encodeURIComponent(CONFIG.SP_LIBRARY+'/'+CONFIG.SP_FOLDER)}')/Files('${CONFIG.SP_FILENAME}')/$value`,{headers:{'Accept':'application/json'},credentials:'include'});
-    if(r.ok){const d=await r.json();if(d)state=d;}
-  }catch(e){console.warn('SP load failed',e);}
+    const r=await fetch(`https://api.github.com/repos/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/contents/${CONFIG.GH_FILE}?ref=${CONFIG.GH_BRANCH}`,{
+      headers:{'Authorization':'token '+CONFIG.GH_TOKEN,'Accept':'application/vnd.github.v3+json'}
+    });
+    if(r.ok){
+      const j=await r.json();
+      fileSHA=j.sha;
+      const decoded=atob(j.content.replace(/\n/g,''));
+      const d=JSON.parse(decoded);
+      if(d && typeof d==='object'){
+        state=d;
+        localSave();
+      }
+    }
+  }catch(e){console.warn('GitHub load failed, using local cache',e);localLoad();}
 }
-async function spSave(){
-  if(CONFIG.DEMO_MODE)return;
+
+async function ghSave(){
   try{
-    const ri=await fetch(`${CONFIG.SP_SITE_URL}/_api/contextinfo`,{method:'POST',headers:{'Accept':'application/json;odata=verbose'},credentials:'include'});
-    const di=await ri.json();const digest=di.d.GetContextWebInformation.FormDigestValue;
-    await fetch(`${CONFIG.SP_SITE_URL}/_api/web/GetFolderByServerRelativeUrl('${encodeURIComponent(CONFIG.SP_LIBRARY+'/'+CONFIG.SP_FOLDER)}')/Files/add(url='${CONFIG.SP_FILENAME}',overwrite=true)`,
-      {method:'POST',credentials:'include',headers:{'X-RequestDigest':digest,'Content-Type':'application/octet-stream'},body:JSON.stringify(state)});
-  }catch(e){console.error('SP save failed',e);}
+    const content=btoa(unescape(encodeURIComponent(JSON.stringify(state,null,2))));
+    const body={message:'Update attendance data',content:content,branch:CONFIG.GH_BRANCH};
+    if(fileSHA) body.sha=fileSHA;
+    const r=await fetch(`https://api.github.com/repos/${CONFIG.GH_OWNER}/${CONFIG.GH_REPO}/contents/${CONFIG.GH_FILE}`,{
+      method:'PUT',
+      headers:{'Authorization':'token '+CONFIG.GH_TOKEN,'Accept':'application/vnd.github.v3+json','Content-Type':'application/json'},
+      body:JSON.stringify(body)
+    });
+    if(r.ok){
+      const j=await r.json();
+      fileSHA=j.content.sha;
+    }else{
+      const err=await r.text();
+      console.error('GitHub save failed',r.status,err);
+      if(r.status===409){await ghLoad();await ghSave();}
+    }
+  }catch(e){console.error('GitHub save error',e);}
 }
-function localSave(){try{localStorage.setItem('att_sp_v4',JSON.stringify(state));}catch(e){}}
-function localLoad(){try{const d=localStorage.getItem('att_sp_v4');if(d)state=JSON.parse(d);}catch(e){}}
-async function saveData(){showSaving(true);localSave();await spSave();showSaving(false);}
+
+function localSave(){try{localStorage.setItem('att_gh_v1',JSON.stringify(state));}catch(e){}}
+function localLoad(){try{const d=localStorage.getItem('att_gh_v1');if(d)state=JSON.parse(d);}catch(e){}}
+async function saveData(){showSaving(true);localSave();await ghSave();showSaving(false);}
 function showSaving(v){document.getElementById('save-indicator').style.display=v?'block':'none';}
+
+// ── Helpers ───────────────────────────────────────────────
 function today(){return new Date().toISOString().slice(0,10);}
 function nowTime(){const n=new Date();return String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0')+':'+String(n.getSeconds()).padStart(2,'0');}
 function fmtTime12(t){if(!t)return'—';const[h,m]=t.split(':');const hr=parseInt(h);return(hr%12||12)+':'+m+(hr<12?' AM':' PM');}
@@ -206,6 +241,8 @@ function getBalance(uid){return(state.balances&&state.balances[uid]!==undefined)
 function setBalance(uid,v){if(!state.balances)state.balances={};state.balances[uid]=v;}
 function getAllLeaves(){return state.leaves?Object.values(state.leaves).flat():[];}
 function getCurrentPw(uid){return(state.passwords&&state.passwords[uid])?state.passwords[uid]:USERS[uid].pw;}
+
+// ── Punch helpers ─────────────────────────────────────────
 function getPunch(uid,date){return(state.punches&&state.punches[uid]&&state.punches[uid][date])||null;}
 function calcDuration(inT,outT){
   if(!inT||!outT)return null;
@@ -215,13 +252,14 @@ function calcDuration(inT,outT){
   const h=Math.floor(diff/60),m=Math.round(diff%60);
   return`${h}h ${m}m`;
 }
+
 async function doLogin(){
   const id=document.getElementById('l-id').value.trim().toUpperCase();
   const pw=document.getElementById('l-pw').value;
   const u=USERS[id];
   if(!u){document.getElementById('login-msg').innerHTML='<div class="alert alert-danger">Invalid login ID or password.</div>';return;}
   document.getElementById('login-loading').style.display='block';
-  if(CONFIG.DEMO_MODE)localLoad(); else await spLoad();
+  await ghLoad();
   document.getElementById('login-loading').style.display='none';
   const activePw=getCurrentPw(id);
   if(pw!==activePw){document.getElementById('login-msg').innerHTML='<div class="alert alert-danger">Invalid login ID or password.</div>';return;}
@@ -236,6 +274,7 @@ async function doLogin(){
   av.className='avatar'+(u.role==='moderator'?' mod':u.role==='manager'?' mgr':'');
   buildNav();showPage('dashboard');
 }
+
 function doLogout(){
   if(clockInterval){clearInterval(clockInterval);clockInterval=null;}
   currentUser=null;
@@ -244,6 +283,7 @@ function doLogout(){
   document.getElementById('login-msg').innerHTML='';
   document.getElementById('l-id').value='';document.getElementById('l-pw').value='';
 }
+
 function buildNav(){
   let tabs=[];
   if(currentUser.role==='moderator')
@@ -254,6 +294,7 @@ function buildNav(){
     tabs=[{k:'dashboard',l:'Dashboard'},{k:'attendance',l:'Attendance & Punch'},{k:'leaves',l:'My Leaves'},{k:'change_pw',l:'Change Password'}];
   document.getElementById('nav-bar').innerHTML=tabs.map(t=>`<button class="nav-btn" data-k="${t.k}" onclick="showPage('${t.k}')">${t.l}</button>`).join('');
 }
+
 function setActiveNav(k){document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.k===k));}
 function showPage(k){
   if(clockInterval){clearInterval(clockInterval);clockInterval=null;}
@@ -270,6 +311,8 @@ function showPage(k){
   else if(k==='mod_approvals') c.innerHTML=renderModApprovals();
   else if(k==='change_pw') c.innerHTML=renderChangePw();
 }
+
+// ── Live clock ────────────────────────────────────────────
 function startClock(){
   const el=document.getElementById('live-clock');
   if(!el)return;
@@ -277,6 +320,8 @@ function startClock(){
     el2.textContent=n.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true});};
   tick();clockInterval=setInterval(tick,1000);
 }
+
+// ── ATTENDANCE & PUNCH PAGE ───────────────────────────────
 function renderAttendance(){
   const td=today(),uid=currentUser.id;
   const myAtt=state.attendance[uid]||{};
@@ -285,22 +330,52 @@ function renderAttendance(){
   const punchIn=punch?punch.in:null;
   const punchOut=punch?punch.out:null;
   const duration=calcDuration(punchIn,punchOut);
+
+  // Punch card
   let punchCard=`<div class="punch-card">
     <div style="font-size:12px;color:#888;margin-bottom:4px">${new Date().toLocaleDateString('en-IN',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}</div>
     <div class="punch-time" id="live-clock">--:--:--</div>
     <div class="punch-status-row">
-      <div class="punch-slot"><div class="punch-slot-lbl">Punch In</div><div class="punch-slot-val punch-in-val">${fmtTime12(punchIn)}</div></div>
+      <div class="punch-slot">
+        <div class="punch-slot-lbl">Punch In</div>
+        <div class="punch-slot-val punch-in-val">${fmtTime12(punchIn)}</div>
+      </div>
       <div style="font-size:24px;color:#ddd;align-self:center">|</div>
-      <div class="punch-slot"><div class="punch-slot-lbl">Punch Out</div><div class="punch-slot-val punch-out-val">${fmtTime12(punchOut)}</div></div>
-      ${duration?`<div style="font-size:24px;color:#ddd;align-self:center">|</div><div class="punch-slot"><div class="punch-slot-lbl">Duration</div><div class="punch-slot-val m-blue">${duration}</div></div>`:''}
-    </div><div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">`;
-  if(!punchIn) punchCard+=`<button class="btn btn-success btn-lg" onclick="doPunch('in')">⏵ Punch In</button>`;
-  else if(!punchOut) punchCard+=`<button class="btn" style="font-size:12px;padding:6px 12px;color:#888" disabled>⏵ Punched In at ${fmtTime12(punchIn)}</button><button class="btn btn-danger btn-lg" onclick="doPunch('out')">⏹ Punch Out</button>`;
-  else punchCard+=`<div style="font-size:13px;color:#107c10;font-weight:600">✓ Punch Out recorded at ${fmtTime12(punchOut)}</div>`;
+      <div class="punch-slot">
+        <div class="punch-slot-lbl">Punch Out</div>
+        <div class="punch-slot-val punch-out-val">${fmtTime12(punchOut)}</div>
+      </div>
+      ${duration?`<div style="font-size:24px;color:#ddd;align-self:center">|</div>
+      <div class="punch-slot">
+        <div class="punch-slot-lbl">Duration</div>
+        <div class="punch-slot-val m-blue">${duration}</div>
+      </div>`:''}
+    </div>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">`;
+
+  if(!punchIn){
+    punchCard+=`<button class="btn btn-success btn-lg" onclick="doPunch('in')">⏵ Punch In</button>`;
+  } else if(!punchOut){
+    punchCard+=`<button class="btn" style="font-size:12px;padding:6px 12px;color:#888" disabled>⏵ Punched In at ${fmtTime12(punchIn)}</button>
+    <button class="btn btn-danger btn-lg" onclick="doPunch('out')">⏹ Punch Out</button>`;
+  } else {
+    punchCard+=`<div style="font-size:13px;color:#107c10;font-weight:600">✓ Punch Out recorded at ${fmtTime12(punchOut)}</div>`;
+  }
   punchCard+=`</div></div>`;
+
+  // Attendance mark
   let markSection='';
-  if(marked) markSection=`<div class="alert alert-success">✓ Attendance marked as <strong>${marked==='cl'?'CL':marked==='lwp'?'LWP':marked.charAt(0).toUpperCase()+marked.slice(1)}</strong> for today</div>`;
-  else markSection=`<p style="font-size:12px;color:#555;margin-bottom:10px">Mark attendance status for today:</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-success" onclick="markAtt('present')">✓ Present</button><button class="btn btn-danger" onclick="markAtt('absent')">✗ Absent</button></div>`;
+  if(marked){
+    markSection=`<div class="alert alert-success">✓ Attendance marked as <strong>${marked==='cl'?'CL':marked==='lwp'?'LWP':marked.charAt(0).toUpperCase()+marked.slice(1)}</strong> for today</div>`;
+  } else {
+    markSection=`<p style="font-size:12px;color:#555;margin-bottom:10px">Mark attendance status for today:</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-success" onclick="markAtt('present')">✓ Present</button>
+      <button class="btn btn-danger" onclick="markAtt('absent')">✗ Absent</button>
+    </div>`;
+  }
+
+  // Calendar
   const mon=td.slice(0,7),mon_label=new Date(mon+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
   const year=parseInt(mon.slice(0,4)),month=parseInt(mon.slice(5,7))-1;
   const firstDay=new Date(year,month,1).getDay(),daysInMonth=new Date(year,month+1,0).getDate();
@@ -316,100 +391,498 @@ function renderAttendance(){
     cal+=`<div class="cal-day ${cls}${ds===td?' today-hl':''}"${tip}>${d}</div>`;
   }
   cal+=`</div>`;
+
+  // Punch history table
   const punchRows=[];
-  for(let d=daysInMonth;d>=1;d--){const ds=`${mon}-${String(d).padStart(2,'0')}`;const p=getPunch(uid,ds);const s=myAtt[ds];if(p&&p.in) punchRows.push({ds,p,s});}
-  return `<div class="card"><p class="card-title">Punch In / Punch Out</p>${punchCard}</div><div class="card"><p class="card-title">Mark attendance</p>${markSection}</div><div class="card"><p class="card-title">${mon_label} — attendance calendar <span style="font-size:11px;color:#888;font-weight:400">(hover date for punch times)</span></p>${cal}<div class="legend"><div class="legend-item"><div class="legend-dot ld-p"></div>Present</div><div class="legend-item"><div class="legend-dot ld-a"></div>Absent</div><div class="legend-item"><div class="legend-dot ld-cl"></div>CL</div><div class="legend-item"><div class="legend-dot ld-lwp"></div>LWP</div></div></div>${punchRows.length>0?`<div class="card"><p class="card-title">Punch history — ${mon_label}</p><table><thead><tr><th>Date</th><th>Status</th><th>Punch In</th><th>Punch Out</th><th>Duration</th></tr></thead><tbody>${punchRows.map(({ds,p,s})=>`<tr><td>${fmtDate(ds)}</td><td>${s?`<span class="badge badge-${s}">${s==='cl'?'CL':s==='lwp'?'LWP':s.charAt(0).toUpperCase()+s.slice(1)}</span>`:'<span style="color:#aaa">—</span>'}</td><td style="color:#107c10;font-weight:600">${fmtTime12(p.in)}</td><td style="color:#d13438;font-weight:600">${p.out?fmtTime12(p.out):'<span style="color:#ca5010">Not punched out</span>'}</td><td>${calcDuration(p.in,p.out)||'<span style="color:#aaa">—</span>'}</td></tr>`).join('')}</tbody></table></div>`:''}`;
+  for(let d=daysInMonth;d>=1;d--){
+    const ds=`${mon}-${String(d).padStart(2,'0')}`;
+    const p=getPunch(uid,ds);
+    const s=myAtt[ds];
+    if(p&&p.in) punchRows.push({ds,p,s});
+  }
+
+  return `<div class="card"><p class="card-title">Punch In / Punch Out</p>${punchCard}</div>
+  <div class="card"><p class="card-title">Mark attendance</p>${markSection}</div>
+  <div class="card"><p class="card-title">${mon_label} — attendance calendar <span style="font-size:11px;color:#888;font-weight:400">(hover date for punch times)</span></p>${cal}
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot ld-p"></div>Present</div>
+    <div class="legend-item"><div class="legend-dot ld-a"></div>Absent</div>
+    <div class="legend-item"><div class="legend-dot ld-cl"></div>CL</div>
+    <div class="legend-item"><div class="legend-dot ld-lwp"></div>LWP</div>
+  </div></div>
+  ${punchRows.length>0?`<div class="card"><p class="card-title">Punch history — ${mon_label}</p>
+  <table><thead><tr><th>Date</th><th>Status</th><th>Punch In</th><th>Punch Out</th><th>Duration</th></tr></thead><tbody>
+  ${punchRows.map(({ds,p,s})=>`<tr>
+    <td>${fmtDate(ds)}</td>
+    <td>${s?`<span class="badge badge-${s}">${s==='cl'?'CL':s==='lwp'?'LWP':s.charAt(0).toUpperCase()+s.slice(1)}</span>`:'<span style="color:#aaa">—</span>'}</td>
+    <td style="color:#107c10;font-weight:600">${fmtTime12(p.in)}</td>
+    <td style="color:#d13438;font-weight:600">${p.out?fmtTime12(p.out):'<span style="color:#ca5010">Not punched out</span>'}</td>
+    <td>${calcDuration(p.in,p.out)||'<span style="color:#aaa">—</span>'}</td>
+  </tr>`).join('')}
+  </tbody></table></div>`:''}`;
 }
+
 async function doPunch(type){
   const td=today(),uid=currentUser.id,t=nowTime();
-  if(!state.punches)state.punches={};if(!state.punches[uid])state.punches[uid]={};if(!state.punches[uid][td])state.punches[uid][td]={in:null,out:null};
-  if(type==='in'){if(state.punches[uid][td].in){alert('Already punched in today.');return;}state.punches[uid][td].in=t;if(!state.attendance[uid])state.attendance[uid]={};if(!state.attendance[uid][td]) state.attendance[uid][td]='present';}
-  else{if(!state.punches[uid][td].in){alert('Please punch in first.');return;}if(state.punches[uid][td].out){alert('Already punched out today.');return;}state.punches[uid][td].out=t;}
-  await saveData();if(clockInterval){clearInterval(clockInterval);clockInterval=null;}showPage('attendance');
+  if(!state.punches)state.punches={};
+  if(!state.punches[uid])state.punches[uid]={};
+  if(!state.punches[uid][td])state.punches[uid][td]={in:null,out:null};
+  if(type==='in'){
+    if(state.punches[uid][td].in){alert('Already punched in today.');return;}
+    state.punches[uid][td].in=t;
+    // auto-mark present if not already marked
+    if(!state.attendance[uid])state.attendance[uid]={};
+    if(!state.attendance[uid][td]) state.attendance[uid][td]='present';
+  } else {
+    if(!state.punches[uid][td].in){alert('Please punch in first.');return;}
+    if(state.punches[uid][td].out){alert('Already punched out today.');return;}
+    state.punches[uid][td].out=t;
+  }
+  await saveData();
+  if(clockInterval){clearInterval(clockInterval);clockInterval=null;}
+  showPage('attendance');
 }
+
 async function markAtt(status){
-  if(!state.attendance)state.attendance={};if(!state.attendance[currentUser.id])state.attendance[currentUser.id]={};
-  state.attendance[currentUser.id][today()]=status;await saveData();if(clockInterval){clearInterval(clockInterval);clockInterval=null;}showPage('attendance');
+  if(!state.attendance)state.attendance={};
+  if(!state.attendance[currentUser.id])state.attendance[currentUser.id]={};
+  state.attendance[currentUser.id][today()]=status;
+  await saveData();
+  if(clockInterval){clearInterval(clockInterval);clockInterval=null;}
+  showPage('attendance');
 }
+
+// ── MODERATOR VIEWS ───────────────────────────────────────
 function renderModOverview(){
-  const td=today(),mon=td.slice(0,7);const mon_label=new Date(mon+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
-  const empIds=getAllEmpIds();let totalP=0,totalCL=0,totalLWP=0,notMarked=0,punchedIn=0;
-  empIds.forEach(eid=>{const s=(state.attendance[eid]||{})[td];if(s==='present')totalP++;else if(s==='cl')totalCL++;else if(s==='lwp')totalLWP++;else notMarked++;const p=getPunch(eid,td);if(p&&p.in&&!p.out)punchedIn++;});
-  const pendingAll=getAllLeaves().filter(l=>l.status==='pending');const managers=Object.values(USERS).filter(u=>u.role==='manager');
-  let html=`<div class="mod-header"><div class="avatar mod" style="width:36px;height:36px;font-size:13px">${initials(currentUser.name)}</div><div><div style="font-size:13px;font-weight:600;color:#7b1fa2">${currentUser.name} — Moderator</div><div style="font-size:11px;color:#888;margin-top:2px">Full visibility · All teams · ${mon_label}</div></div></div><div class="card"><p class="card-title">Today's snapshot — ${fmtDate(td)}</p><div class="metric-grid"><div class="metric"><div class="metric-val" style="color:#555">${empIds.length}</div><div class="metric-lbl">Total employees</div></div><div class="metric"><div class="metric-val m-green">${totalP}</div><div class="metric-lbl">Present</div></div><div class="metric"><div class="metric-val m-blue">${punchedIn}</div><div class="metric-lbl">Currently in office</div></div><div class="metric"><div class="metric-val m-blue">${totalCL}</div><div class="metric-lbl">On CL</div></div><div class="metric"><div class="metric-val m-amber">${totalLWP}</div><div class="metric-lbl">On LWP</div></div><div class="metric"><div class="metric-val m-red">${notMarked}</div><div class="metric-lbl">Not marked</div></div><div class="metric"><div class="metric-val m-purple">${pendingAll.length}</div><div class="metric-lbl">Pending leaves</div></div></div></div><div class="card"><p class="card-title">Team-wise status — today</p><table><thead><tr><th>Manager</th><th>Team</th><th>HC</th><th style="text-align:center">Present</th><th style="text-align:center">In office</th><th style="text-align:center">CL</th><th style="text-align:center">LWP</th><th style="text-align:center">Not marked</th><th style="text-align:center">Pending</th></tr></thead><tbody>`;
-  managers.forEach(m=>{let p=0,cl=0,lwp=0,nm=0,inOff=0;m.team.forEach(eid=>{const s=(state.attendance[eid]||{})[td];if(s==='present')p++;else if(s==='cl')cl++;else if(s==='lwp')lwp++;else nm++;const punch=getPunch(eid,td);if(punch&&punch.in&&!punch.out)inOff++;});const pend=getAllLeaves().filter(l=>l.status==='pending'&&m.team.includes(l.empId)).length;html+=`<tr><td style="font-weight:600">${m.name}</td><td><span class="team-tag">${m.teamName}</span></td><td style="text-align:center">${m.team.length}</td><td style="text-align:center;color:#107c10;font-weight:600">${p}</td><td style="text-align:center;color:#0078d4">${inOff}</td><td style="text-align:center;color:#0078d4">${cl}</td><td style="text-align:center;color:#ca5010">${lwp}</td><td style="text-align:center;color:${nm>0?'#d13438':'#888'};font-weight:${nm>0?'600':'400'}">${nm}</td><td style="text-align:center;color:${pend>0?'#ca5010':'#888'}">${pend}</td></tr>`;});
-  html+=`</tbody></table></div>`;return html;
-}
-function renderModDaily(){
-  const td=today();let dateOpts='';for(let i=0;i<30;i++){const d=new Date();d.setDate(d.getDate()-i);const ds=d.toISOString().slice(0,10);dateOpts+=`<option value="${ds}"${i===0?' selected':''}>${fmtDate(ds)}</option>`;}
-  const empIds=getAllEmpIds();let rows='';
-  empIds.forEach(eid=>{const eu=USERS[eid];if(!eu)return;const mgr=USERS[eu.manager];const s=(state.attendance[eid]||{})[td];const p=getPunch(eid,td);const badge=s?`<span class="badge badge-${s}">${s==='cl'?'CL':s==='lwp'?'LWP':s.charAt(0).toUpperCase()+s.slice(1)}</span>`:`<span class="badge badge-pending">Not marked</span>`;rows+=`<tr id="dr-${eid}"><td style="font-weight:600">${eu.name}</td><td style="color:#888">${eu.id}</td><td><span class="team-tag">${eu.team}</span></td><td>${mgr?mgr.name:'—'}</td><td class="att-cell">${badge}</td><td class="pi-cell" style="color:#107c10;font-weight:600">${p&&p.in?fmtTime12(p.in):'<span style="color:#aaa">—</span>'}</td><td class="po-cell" style="color:#d13438;font-weight:600">${p&&p.out?fmtTime12(p.out):'<span style="color:#aaa">—</span>'}</td><td class="dur-cell">${p?calcDuration(p.in,p.out)||'<span style="color:#aaa">—</span>':'<span style="color:#aaa">—</span>'}</td></tr>`;});
-  return `<div class="card"><p class="card-title">Daily attendance & punch log <select id="date-filter" onchange="refreshDaily()" style="font-size:12px;padding:4px 8px;border:1px solid #d0d0d0;border-radius:5px;font-family:Segoe UI,sans-serif">${dateOpts}</select></p><table><thead><tr><th>Employee</th><th>Login ID</th><th>Team</th><th>Manager</th><th>Status</th><th>Punch In</th><th>Punch Out</th><th>Duration</th></tr></thead><tbody id="daily-tbody">${rows}</tbody></table></div>`;
-}
-function refreshDaily(){
-  const selDate=document.getElementById('date-filter')?.value||today();
-  getAllEmpIds().forEach(eid=>{const row=document.getElementById('dr-'+eid);if(!row)return;const s=(state.attendance[eid]||{})[selDate];const p=getPunch(eid,selDate);const badge=s?`<span class="badge badge-${s}">${s==='cl'?'CL':s==='lwp'?'LWP':s.charAt(0).toUpperCase()+s.slice(1)}</span>`:`<span class="badge badge-pending">Not marked</span>`;row.querySelector('.att-cell').innerHTML=badge;row.querySelector('.pi-cell').innerHTML=p&&p.in?fmtTime12(p.in):'<span style="color:#aaa">—</span>';row.querySelector('.po-cell').innerHTML=p&&p.out?fmtTime12(p.out):'<span style="color:#aaa">—</span>';row.querySelector('.dur-cell').innerHTML=p?calcDuration(p.in,p.out)||'<span style="color:#aaa">—</span>':'<span style="color:#aaa">—</span>';});
-}
-function renderModPunches(){
-  const mon=today().slice(0,7);const year=parseInt(mon.slice(0,4)),month=parseInt(mon.slice(5,7))-1;const daysInMonth=new Date(year,month+1,0).getDate();const mon_label=new Date(mon+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});const empIds=getAllEmpIds();let rows='';
-  for(let d=daysInMonth;d>=1;d--){const ds=`${mon}-${String(d).padStart(2,'0')}`;empIds.forEach(eid=>{const p=getPunch(eid,ds);if(!p||!p.in)return;const eu=USERS[eid];const s=(state.attendance[eid]||{})[ds];const dur=calcDuration(p.in,p.out);rows+=`<tr><td>${fmtDate(ds)}</td><td style="font-weight:600">${eu?eu.name:eid}</td><td><span class="team-tag">${eu?eu.team:''}</span></td><td style="color:#107c10;font-weight:600">${fmtTime12(p.in)}</td><td style="color:#d13438;font-weight:600">${p.out?fmtTime12(p.out):'<span style="color:#ca5010">Not punched out</span>'}</td><td>${dur?`<span class="hours-chip">${dur}</span>`:'<span style="color:#aaa">—</span>'}</td><td>${s?`<span class="badge badge-${s}">${s==='cl'?'CL':s==='lwp'?'LWP':s.charAt(0).toUpperCase()+s.slice(1)}</span>`:'<span style="color:#aaa">—</span>'}</td></tr>`;});}
-  return `<div class="card"><p class="card-title">Punch log — ${mon_label} (all employees)</p>${rows?`<table><thead><tr><th>Date</th><th>Employee</th><th>Team</th><th>Punch In</th><th>Punch Out</th><th>Duration</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`:'<p style="font-size:12px;color:#888">No punch records this month yet.</p>'}</div>`;
-}
-function renderModLeaves(){
-  const allLeaves=getAllLeaves().sort((a,b)=>b.appliedOn.localeCompare(a.appliedOn));const teams=['All',...new Set(getAllEmpIds().map(id=>USERS[id]?.team).filter(Boolean))];
-  return `<div class="card"><p class="card-title">All leave requests — organisation wide</p><div class="filter-bar"><label style="font-size:12px;color:#666">Team:</label><select id="lf-team" onchange="filterLeaveTable()"><option>All</option>${teams.slice(1).map(t=>`<option>${t}</option>`).join('')}</select><label style="font-size:12px;color:#666">Status:</label><select id="lf-status" onchange="filterLeaveTable()"><option value="All">All</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select></div><table><thead><tr><th>Employee</th><th>Team</th><th>Manager</th><th>Type</th><th>From</th><th>To</th><th>Days</th><th>Applied</th><th>Status</th><th>Remark</th></tr></thead><tbody id="mod-leave-tbody">${allLeaves.map(l=>{const eu=USERS[l.empId],mgr=eu?USERS[eu.manager]:null;return `<tr data-team="${eu?eu.team:''}" data-status="${l.status}"><td style="font-weight:600">${eu?eu.name:l.empId}</td><td><span class="team-tag">${eu?eu.team:''}</span></td><td>${mgr?mgr.name:'—'}</td><td><span class="badge badge-${l.type}">${l.type.toUpperCase()}</span></td><td>${fmtDate(l.from)}</td><td>${fmtDate(l.to)}</td><td>${l.days}</td><td>${fmtDate(l.appliedOn)}</td><td><span class="badge badge-${l.status}">${l.status.charAt(0).toUpperCase()+l.status.slice(1)}</span></td><td style="color:#888">${l.remark||'—'}</td></tr>`;}).join('')}</tbody></table></div>`;
-}
-function filterLeaveTable(){const team=document.getElementById('lf-team')?.value||'All';const status=document.getElementById('lf-status')?.value||'All';document.querySelectorAll('#mod-leave-tbody tr').forEach(row=>{const tMatch=team==='All'||row.dataset.team===team;const sMatch=status==='All'||row.dataset.status===status;row.style.display=(tMatch&&sMatch)?'':'none';});}
-function renderModApprovals(){
-  const pending=getAllLeaves().filter(l=>l.status==='pending');
-  return `<div class="card"><p class="card-title">Override approvals — all pending requests (${pending.length})</p>${pending.length===0?'<p style="font-size:12px;color:#888">No pending leave requests across any team.</p>':''}${pending.map(l=>{const eu=USERS[l.empId],mgr=eu?USERS[eu.manager]:null;return `<div style="padding:13px 0;border-bottom:1px solid #f0f0f0"><div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px"><div><div style="display:flex;align-items:center;gap:8px;margin-bottom:5px"><div class="avatar" style="width:26px;height:26px;font-size:10px">${initials(eu?eu.name:l.empId)}</div><span style="font-weight:600;font-size:13px">${eu?eu.name:l.empId}</span><span class="team-tag">${eu?eu.team:''}</span><span style="font-size:11px;color:#888">Reports to: ${mgr?mgr.name:'—'}</span></div><p style="font-size:11px;color:#666"><span class="badge badge-${l.type}">${l.type.toUpperCase()}</span> &nbsp;${fmtDate(l.from)} — ${fmtDate(l.to)} &nbsp;(${l.days} day${l.days>1?'s':''})</p><p style="font-size:11px;color:#888;margin-top:3px">Reason: ${l.reason||'—'}</p></div><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><input id="rmk-${l.id}" placeholder="Remark (optional)" style="padding:5px 8px;border:1px solid #d0d0d0;border-radius:5px;font-size:11px;width:150px;font-family:Segoe UI,sans-serif"/><button class="btn btn-success" style="font-size:11px;padding:5px 10px" onclick="decideLeave('${l.id}','approved')">✓ Approve</button><button class="btn btn-danger" style="font-size:11px;padding:5px 10px" onclick="decideLeave('${l.id}','rejected')">✗ Reject</button></div></div></div>`;}).join('')}</div>`;
-}
-function renderDashboard(){
-  const u=currentUser,td=today(),mon=td.slice(0,7);const mon_label=new Date(mon+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});const empIds=u.role==='manager'?u.team:[u.id];
-  let present=0,cl=0,lwp=0;empIds.forEach(eid=>{const att=state.attendance[eid]||{};Object.entries(att).forEach(([d,s])=>{if(d.startsWith(mon)){if(s==='present')present++;else if(s==='cl')cl++;else if(s==='lwp')lwp++;}});});
-  const pending=getAllLeaves().filter(l=>l.status==='pending'&&(u.role==='manager'?empIds.includes(l.empId):l.empId===u.id));const myAtt=(state.attendance[u.id]||{})[td];const myPunch=getPunch(u.id,td);let attAlert='';
-  if(u.role==='employee'||u.role==='manager'){if(!myAtt)attAlert='<div class="alert alert-warning">⚠ Attendance not yet marked for today.</div>';else attAlert=`<div class="alert alert-success">✓ Today marked as <strong>${myAtt==='cl'?'CL':myAtt==='lwp'?'LWP':myAtt.charAt(0).toUpperCase()+myAtt.slice(1)}</strong></div>`;if(myPunch&&myPunch.in&&!myPunch.out)attAlert+=`<div class="alert alert-info">⏵ Punched in at ${fmtTime12(myPunch.in)} — remember to punch out.</div>`;}
-  let html=`<div class="card"><p class="card-title">Dashboard — ${mon_label}</p>${attAlert}`;
-  if(u.role==='manager'){html+=`<div class="metric-grid"><div class="metric"><div class="metric-val m-blue">${u.team.length}</div><div class="metric-lbl">Team size</div></div><div class="metric"><div class="metric-val m-green">${present}</div><div class="metric-lbl">Present (month)</div></div><div class="metric"><div class="metric-val m-blue">${cl}</div><div class="metric-lbl">CL taken</div></div><div class="metric"><div class="metric-val m-amber">${lwp}</div><div class="metric-lbl">LWP</div></div><div class="metric"><div class="metric-val m-amber">${pending.length}</div><div class="metric-lbl">Pending approvals</div></div></div><p style="font-size:12px;font-weight:600;color:#555;margin-bottom:10px">Today's team status</p><div style="display:flex;flex-wrap:wrap;gap:8px">${u.team.map(eid=>{const eu=USERS[eid];if(!eu)return'';const att=(state.attendance[eid]||{})[td];const p=getPunch(eid,td);const badge=att?`<span class="badge badge-${att}">${att==='cl'?'CL':att==='lwp'?'LWP':att.charAt(0).toUpperCase()+att.slice(1)}</span>`:`<span class="badge badge-pending">Not marked</span>`;const punchInfo=p&&p.in?`<div style="font-size:10px;color:#888;margin-top:2px">${fmtTime12(p.in)} → ${p.out?fmtTime12(p.out):'in office'}</div>`:'';return `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid #eee;border-radius:6px;background:#fafafa"><div class="avatar" style="width:26px;height:26px;font-size:10px">${initials(eu.name)}</div><div><div style="font-size:12px;font-weight:600">${eu.name}</div><div style="margin-top:2px">${badge}</div>${punchInfo}</div></div>`;}).join('')}</div>`;}
-  else{const myAM=state.attendance[u.id]||{};let myP=0,myCL=0,myLWP=0;Object.entries(myAM).forEach(([d,s])=>{if(d.startsWith(mon)){if(s==='present')myP++;else if(s==='cl')myCL++;else if(s==='lwp')myLWP++;}});html+=`<div class="metric-grid"><div class="metric"><div class="metric-val m-green">${myP}</div><div class="metric-lbl">Present this month</div></div><div class="metric"><div class="metric-val m-blue">${myCL}</div><div class="metric-lbl">CL taken</div></div><div class="metric"><div class="metric-val m-red">${myLWP}</div><div class="metric-lbl">LWP</div></div><div class="metric"><div class="metric-val m-amber">${getBalance(u.id)}</div><div class="metric-lbl">CL balance</div></div></div><p style="font-size:12px;color:#555">Reporting to: <strong>${USERS[u.manager]?USERS[u.manager].name:u.manager}</strong> &nbsp;<span class="team-tag">${u.team}</span></p>`;}
-  html+=`</div>`;
-  if(pending.length>0){html+=`<div class="card"><p class="card-title">Pending leave requests</p><table><thead><tr><th>Employee</th><th>Team</th><th>Type</th><th>From</th><th>To</th><th>Days</th></tr></thead><tbody>${pending.map(l=>{const eu=USERS[l.empId];return `<tr><td style="font-weight:600">${eu?eu.name:l.empId}</td><td><span class="team-tag">${eu?eu.team:''}</span></td><td><span class="badge badge-${l.type}">${l.type.toUpperCase()}</span></td><td>${fmtDate(l.from)}</td><td>${fmtDate(l.to)}</td><td>${l.days}</td></tr>`;}).join('')}</tbody></table></div>`;}
+  const td=today(),mon=td.slice(0,7);
+  const mon_label=new Date(mon+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+  const empIds=getAllEmpIds();
+  let totalP=0,totalCL=0,totalLWP=0,notMarked=0,punchedIn=0;
+  empIds.forEach(eid=>{
+    const s=(state.attendance[eid]||{})[td];
+    if(s==='present')totalP++;else if(s==='cl')totalCL++;else if(s==='lwp')totalLWP++;else notMarked++;
+    const p=getPunch(eid,td);
+    if(p&&p.in&&!p.out)punchedIn++;
+  });
+  const pendingAll=getAllLeaves().filter(l=>l.status==='pending');
+  const managers=Object.values(USERS).filter(u=>u.role==='manager');
+
+  let html=`<div class="mod-header">
+    <div class="avatar mod" style="width:36px;height:36px;font-size:13px">${initials(currentUser.name)}</div>
+    <div><div style="font-size:13px;font-weight:600;color:#7b1fa2">${currentUser.name} — Moderator</div>
+    <div style="font-size:11px;color:#888;margin-top:2px">Full visibility · All teams · ${mon_label}</div></div>
+  </div>
+  <div class="card"><p class="card-title">Today's snapshot — ${fmtDate(td)}</p>
+    <div class="metric-grid">
+      <div class="metric"><div class="metric-val" style="color:#555">${empIds.length}</div><div class="metric-lbl">Total employees</div></div>
+      <div class="metric"><div class="metric-val m-green">${totalP}</div><div class="metric-lbl">Present</div></div>
+      <div class="metric"><div class="metric-val m-blue">${punchedIn}</div><div class="metric-lbl">Currently in office</div></div>
+      <div class="metric"><div class="metric-val m-blue">${totalCL}</div><div class="metric-lbl">On CL</div></div>
+      <div class="metric"><div class="metric-val m-amber">${totalLWP}</div><div class="metric-lbl">On LWP</div></div>
+      <div class="metric"><div class="metric-val m-red">${notMarked}</div><div class="metric-lbl">Not marked</div></div>
+      <div class="metric"><div class="metric-val m-purple">${pendingAll.length}</div><div class="metric-lbl">Pending leaves</div></div>
+    </div>
+  </div>
+  <div class="card"><p class="card-title">Team-wise status — today</p>
+    <table><thead><tr><th>Manager</th><th>Team</th><th>HC</th><th style="text-align:center">Present</th><th style="text-align:center">In office</th><th style="text-align:center">CL</th><th style="text-align:center">LWP</th><th style="text-align:center">Not marked</th><th style="text-align:center">Pending</th></tr></thead><tbody>`;
+  managers.forEach(m=>{
+    let p=0,cl=0,lwp=0,nm=0,inOff=0;
+    m.team.forEach(eid=>{
+      const s=(state.attendance[eid]||{})[td];
+      if(s==='present')p++;else if(s==='cl')cl++;else if(s==='lwp')lwp++;else nm++;
+      const punch=getPunch(eid,td);
+      if(punch&&punch.in&&!punch.out)inOff++;
+    });
+    const pend=getAllLeaves().filter(l=>l.status==='pending'&&m.team.includes(l.empId)).length;
+    html+=`<tr><td style="font-weight:600">${m.name}</td><td><span class="team-tag">${m.teamName}</span></td><td style="text-align:center">${m.team.length}</td>
+      <td style="text-align:center;color:#107c10;font-weight:600">${p}</td>
+      <td style="text-align:center;color:#0078d4">${inOff}</td>
+      <td style="text-align:center;color:#0078d4">${cl}</td>
+      <td style="text-align:center;color:#ca5010">${lwp}</td>
+      <td style="text-align:center;color:${nm>0?'#d13438':'#888'};font-weight:${nm>0?'600':'400'}">${nm}</td>
+      <td style="text-align:center;color:${pend>0?'#ca5010':'#888'}">${pend}</td></tr>`;
+  });
+  html+=`</tbody></table></div>`;
   return html;
 }
+
+function renderModDaily(){
+  const td=today();
+  let dateOpts='';
+  for(let i=0;i<30;i++){const d=new Date();d.setDate(d.getDate()-i);const ds=d.toISOString().slice(0,10);dateOpts+=`<option value="${ds}"${i===0?' selected':''}>${fmtDate(ds)}</option>`;}
+  const empIds=getAllEmpIds();
+  let rows='';
+  empIds.forEach(eid=>{
+    const eu=USERS[eid];if(!eu)return;
+    const mgr=USERS[eu.manager];
+    const s=(state.attendance[eid]||{})[td];
+    const p=getPunch(eid,td);
+    const badge=s?`<span class="badge badge-${s}">${s==='cl'?'CL':s==='lwp'?'LWP':s.charAt(0).toUpperCase()+s.slice(1)}</span>`:`<span class="badge badge-pending">Not marked</span>`;
+    rows+=`<tr id="dr-${eid}">
+      <td style="font-weight:600">${eu.name}</td><td style="color:#888">${eu.id}</td>
+      <td><span class="team-tag">${eu.team}</span></td><td>${mgr?mgr.name:'—'}</td>
+      <td class="att-cell">${badge}</td>
+      <td class="pi-cell" style="color:#107c10;font-weight:600">${p&&p.in?fmtTime12(p.in):'<span style="color:#aaa">—</span>'}</td>
+      <td class="po-cell" style="color:#d13438;font-weight:600">${p&&p.out?fmtTime12(p.out):'<span style="color:#aaa">—</span>'}</td>
+      <td class="dur-cell">${p?calcDuration(p.in,p.out)||'<span style="color:#aaa">—</span>':'<span style="color:#aaa">—</span>'}</td>
+    </tr>`;
+  });
+  return `<div class="card"><p class="card-title">Daily attendance & punch log
+    <select id="date-filter" onchange="refreshDaily()" style="font-size:12px;padding:4px 8px;border:1px solid #d0d0d0;border-radius:5px;font-family:Segoe UI,sans-serif">${dateOpts}</select>
+  </p>
+    <table><thead><tr><th>Employee</th><th>Login ID</th><th>Team</th><th>Manager</th><th>Status</th><th>Punch In</th><th>Punch Out</th><th>Duration</th></tr></thead>
+    <tbody id="daily-tbody">${rows}</tbody></table></div>`;
+}
+
+function refreshDaily(){
+  const selDate=document.getElementById('date-filter')?.value||today();
+  getAllEmpIds().forEach(eid=>{
+    const row=document.getElementById('dr-'+eid);if(!row)return;
+    const s=(state.attendance[eid]||{})[selDate];
+    const p=getPunch(eid,selDate);
+    const badge=s?`<span class="badge badge-${s}">${s==='cl'?'CL':s==='lwp'?'LWP':s.charAt(0).toUpperCase()+s.slice(1)}</span>`:`<span class="badge badge-pending">Not marked</span>`;
+    row.querySelector('.att-cell').innerHTML=badge;
+    row.querySelector('.pi-cell').innerHTML=p&&p.in?fmtTime12(p.in):'<span style="color:#aaa">—</span>';
+    row.querySelector('.po-cell').innerHTML=p&&p.out?fmtTime12(p.out):'<span style="color:#aaa">—</span>';
+    row.querySelector('.dur-cell').innerHTML=p?calcDuration(p.in,p.out)||'<span style="color:#aaa">—</span>':'<span style="color:#aaa">—</span>';
+  });
+}
+
+function renderModPunches(){
+  const mon=today().slice(0,7);
+  const year=parseInt(mon.slice(0,4)),month=parseInt(mon.slice(5,7))-1;
+  const daysInMonth=new Date(year,month+1,0).getDate();
+  const mon_label=new Date(mon+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+  const empIds=getAllEmpIds();
+
+  // build rows: all punch records this month
+  let rows='';
+  for(let d=daysInMonth;d>=1;d--){
+    const ds=`${mon}-${String(d).padStart(2,'0')}`;
+    empIds.forEach(eid=>{
+      const p=getPunch(eid,ds);
+      if(!p||!p.in)return;
+      const eu=USERS[eid];
+      const s=(state.attendance[eid]||{})[ds];
+      const dur=calcDuration(p.in,p.out);
+      rows+=`<tr>
+        <td>${fmtDate(ds)}</td>
+        <td style="font-weight:600">${eu?eu.name:eid}</td>
+        <td><span class="team-tag">${eu?eu.team:''}</span></td>
+        <td style="color:#107c10;font-weight:600">${fmtTime12(p.in)}</td>
+        <td style="color:#d13438;font-weight:600">${p.out?fmtTime12(p.out):'<span style="color:#ca5010">Not punched out</span>'}</td>
+        <td>${dur?`<span class="hours-chip">${dur}</span>`:'<span style="color:#aaa">—</span>'}</td>
+        <td>${s?`<span class="badge badge-${s}">${s==='cl'?'CL':s==='lwp'?'LWP':s.charAt(0).toUpperCase()+s.slice(1)}</span>`:'<span style="color:#aaa">—</span>'}</td>
+      </tr>`;
+    });
+  }
+
+  return `<div class="card"><p class="card-title">Punch log — ${mon_label} (all employees)</p>
+    ${rows?`<table><thead><tr><th>Date</th><th>Employee</th><th>Team</th><th>Punch In</th><th>Punch Out</th><th>Duration</th><th>Status</th></tr></thead>
+    <tbody>${rows}</tbody></table>`:'<p style="font-size:12px;color:#888">No punch records this month yet.</p>'}
+  </div>`;
+}
+
+function renderModLeaves(){
+  const allLeaves=getAllLeaves().sort((a,b)=>b.appliedOn.localeCompare(a.appliedOn));
+  const teams=['All',...new Set(getAllEmpIds().map(id=>USERS[id]?.team).filter(Boolean))];
+  return `<div class="card"><p class="card-title">All leave requests — organisation wide</p>
+    <div class="filter-bar">
+      <label style="font-size:12px;color:#666">Team:</label>
+      <select id="lf-team" onchange="filterLeaveTable()"><option>All</option>${teams.slice(1).map(t=>`<option>${t}</option>`).join('')}</select>
+      <label style="font-size:12px;color:#666">Status:</label>
+      <select id="lf-status" onchange="filterLeaveTable()"><option value="All">All</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>
+    </div>
+    <table><thead><tr><th>Employee</th><th>Team</th><th>Manager</th><th>Type</th><th>From</th><th>To</th><th>Days</th><th>Applied</th><th>Status</th><th>Remark</th></tr></thead>
+    <tbody id="mod-leave-tbody">
+    ${allLeaves.map(l=>{const eu=USERS[l.empId],mgr=eu?USERS[eu.manager]:null;
+      return `<tr data-team="${eu?eu.team:''}" data-status="${l.status}">
+        <td style="font-weight:600">${eu?eu.name:l.empId}</td><td><span class="team-tag">${eu?eu.team:''}</span></td>
+        <td>${mgr?mgr.name:'—'}</td><td><span class="badge badge-${l.type}">${l.type.toUpperCase()}</span></td>
+        <td>${fmtDate(l.from)}</td><td>${fmtDate(l.to)}</td><td>${l.days}</td><td>${fmtDate(l.appliedOn)}</td>
+        <td><span class="badge badge-${l.status}">${l.status.charAt(0).toUpperCase()+l.status.slice(1)}</span></td>
+        <td style="color:#888">${l.remark||'—'}</td></tr>`;
+    }).join('')}
+    </tbody></table></div>`;
+}
+
+function filterLeaveTable(){
+  const team=document.getElementById('lf-team')?.value||'All';
+  const status=document.getElementById('lf-status')?.value||'All';
+  document.querySelectorAll('#mod-leave-tbody tr').forEach(row=>{
+    const tMatch=team==='All'||row.dataset.team===team;
+    const sMatch=status==='All'||row.dataset.status===status;
+    row.style.display=(tMatch&&sMatch)?'':'none';
+  });
+}
+
+function renderModApprovals(){
+  const pending=getAllLeaves().filter(l=>l.status==='pending');
+  return `<div class="card"><p class="card-title">Override approvals — all pending requests (${pending.length})</p>
+    ${pending.length===0?'<p style="font-size:12px;color:#888">No pending leave requests across any team.</p>':''}
+    ${pending.map(l=>{const eu=USERS[l.empId],mgr=eu?USERS[eu.manager]:null;
+      return `<div style="padding:13px 0;border-bottom:1px solid #f0f0f0">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+              <div class="avatar" style="width:26px;height:26px;font-size:10px">${initials(eu?eu.name:l.empId)}</div>
+              <span style="font-weight:600;font-size:13px">${eu?eu.name:l.empId}</span>
+              <span class="team-tag">${eu?eu.team:''}</span>
+              <span style="font-size:11px;color:#888">Reports to: ${mgr?mgr.name:'—'}</span>
+            </div>
+            <p style="font-size:11px;color:#666"><span class="badge badge-${l.type}">${l.type.toUpperCase()}</span> &nbsp;${fmtDate(l.from)} — ${fmtDate(l.to)} &nbsp;(${l.days} day${l.days>1?'s':''})</p>
+            <p style="font-size:11px;color:#888;margin-top:3px">Reason: ${l.reason||'—'}</p>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <input id="rmk-${l.id}" placeholder="Remark (optional)" style="padding:5px 8px;border:1px solid #d0d0d0;border-radius:5px;font-size:11px;width:150px;font-family:Segoe UI,sans-serif"/>
+            <button class="btn btn-success" style="font-size:11px;padding:5px 10px" onclick="decideLeave('${l.id}','approved')">✓ Approve</button>
+            <button class="btn btn-danger" style="font-size:11px;padding:5px 10px" onclick="decideLeave('${l.id}','rejected')">✗ Reject</button>
+          </div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+// ── EMPLOYEE / MANAGER DASHBOARD ──────────────────────────
+function renderDashboard(){
+  const u=currentUser,td=today(),mon=td.slice(0,7);
+  const mon_label=new Date(mon+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+  const empIds=u.role==='manager'?u.team:[u.id];
+  let present=0,cl=0,lwp=0;
+  empIds.forEach(eid=>{const att=state.attendance[eid]||{};Object.entries(att).forEach(([d,s])=>{if(d.startsWith(mon)){if(s==='present')present++;else if(s==='cl')cl++;else if(s==='lwp')lwp++;}});});
+  const pending=getAllLeaves().filter(l=>l.status==='pending'&&(u.role==='manager'?empIds.includes(l.empId):l.empId===u.id));
+  const myAtt=(state.attendance[u.id]||{})[td];
+  const myPunch=getPunch(u.id,td);
+
+  let attAlert='';
+  if(u.role==='employee'||u.role==='manager'){
+    if(!myAtt) attAlert='<div class="alert alert-warning">⚠ Attendance not yet marked for today.</div>';
+    else attAlert=`<div class="alert alert-success">✓ Today marked as <strong>${myAtt==='cl'?'CL':myAtt==='lwp'?'LWP':myAtt.charAt(0).toUpperCase()+myAtt.slice(1)}</strong></div>`;
+    if(myPunch&&myPunch.in&&!myPunch.out) attAlert+=`<div class="alert alert-info">⏵ Punched in at ${fmtTime12(myPunch.in)} — remember to punch out.</div>`;
+  }
+
+  let html=`<div class="card"><p class="card-title">Dashboard — ${mon_label}</p>${attAlert}`;
+  if(u.role==='manager'){
+    html+=`<div class="metric-grid">
+      <div class="metric"><div class="metric-val m-blue">${u.team.length}</div><div class="metric-lbl">Team size</div></div>
+      <div class="metric"><div class="metric-val m-green">${present}</div><div class="metric-lbl">Present (month)</div></div>
+      <div class="metric"><div class="metric-val m-blue">${cl}</div><div class="metric-lbl">CL taken</div></div>
+      <div class="metric"><div class="metric-val m-amber">${lwp}</div><div class="metric-lbl">LWP</div></div>
+      <div class="metric"><div class="metric-val m-amber">${pending.length}</div><div class="metric-lbl">Pending approvals</div></div>
+    </div>
+    <p style="font-size:12px;font-weight:600;color:#555;margin-bottom:10px">Today's team status</p>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      ${u.team.map(eid=>{const eu=USERS[eid];if(!eu)return'';
+        const att=(state.attendance[eid]||{})[td];
+        const p=getPunch(eid,td);
+        const badge=att?`<span class="badge badge-${att}">${att==='cl'?'CL':att==='lwp'?'LWP':att.charAt(0).toUpperCase()+att.slice(1)}</span>`:`<span class="badge badge-pending">Not marked</span>`;
+        const punchInfo=p&&p.in?`<div style="font-size:10px;color:#888;margin-top:2px">${fmtTime12(p.in)} → ${p.out?fmtTime12(p.out):'in office'}</div>`:'';
+        return `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid #eee;border-radius:6px;background:#fafafa">
+          <div class="avatar" style="width:26px;height:26px;font-size:10px">${initials(eu.name)}</div>
+          <div><div style="font-size:12px;font-weight:600">${eu.name}</div><div style="margin-top:2px">${badge}</div>${punchInfo}</div>
+        </div>`;
+      }).join('')}
+    </div>`;
+  } else {
+    const myAM=state.attendance[u.id]||{};
+    let myP=0,myCL=0,myLWP=0;
+    Object.entries(myAM).forEach(([d,s])=>{if(d.startsWith(mon)){if(s==='present')myP++;else if(s==='cl')myCL++;else if(s==='lwp')myLWP++;}});
+    html+=`<div class="metric-grid">
+      <div class="metric"><div class="metric-val m-green">${myP}</div><div class="metric-lbl">Present this month</div></div>
+      <div class="metric"><div class="metric-val m-blue">${myCL}</div><div class="metric-lbl">CL taken</div></div>
+      <div class="metric"><div class="metric-val m-red">${myLWP}</div><div class="metric-lbl">LWP</div></div>
+      <div class="metric"><div class="metric-val m-amber">${getBalance(u.id)}</div><div class="metric-lbl">CL balance</div></div>
+    </div>
+    <p style="font-size:12px;color:#555">Reporting to: <strong>${USERS[u.manager]?USERS[u.manager].name:u.manager}</strong> &nbsp;<span class="team-tag">${u.team}</span></p>`;
+  }
+  html+=`</div>`;
+  if(pending.length>0){
+    html+=`<div class="card"><p class="card-title">Pending leave requests</p>
+    <table><thead><tr><th>Employee</th><th>Team</th><th>Type</th><th>From</th><th>To</th><th>Days</th></tr></thead><tbody>
+    ${pending.map(l=>{const eu=USERS[l.empId];return `<tr><td style="font-weight:600">${eu?eu.name:l.empId}</td><td><span class="team-tag">${eu?eu.team:''}</span></td><td><span class="badge badge-${l.type}">${l.type.toUpperCase()}</span></td><td>${fmtDate(l.from)}</td><td>${fmtDate(l.to)}</td><td>${l.days}</td></tr>`;}).join('')}
+    </tbody></table></div>`;
+  }
+  return html;
+}
+
+// ── LEAVES ────────────────────────────────────────────────
 function renderLeaves(){
-  const u=currentUser,clBal=getBalance(u.id);const myLeaves=getAllLeaves().filter(l=>l.empId===u.id).sort((a,b)=>b.from.localeCompare(a.from));
-  return `<div class="card"><p class="card-title">Apply for leave</p><div class="row-gap"><div class="flex-1 form-group"><label>Leave type</label><select id="lv-type"><option value="cl">CL — Casual Leave (balance: ${clBal} days)</option><option value="lwp">LWP — Leave Without Pay</option></select></div><div class="flex-1 form-group"><label>From date</label><input type="date" id="lv-from"/></div><div class="flex-1 form-group"><label>To date</label><input type="date" id="lv-to"/></div></div><div class="form-group"><label>Reason</label><textarea id="lv-reason" placeholder="Brief reason for leave"></textarea></div><div id="lv-msg"></div><button class="btn btn-primary" onclick="applyLeave()">Submit leave request</button></div><div class="card"><p class="card-title">My leave history</p>${myLeaves.length===0?'<p style="font-size:12px;color:#888">No leave requests yet.</p>':`<table><thead><tr><th>Type</th><th>From</th><th>To</th><th>Days</th><th>Status</th><th>Remark</th></tr></thead><tbody>${myLeaves.map(l=>`<tr><td><span class="badge badge-${l.type}">${l.type.toUpperCase()}</span></td><td>${fmtDate(l.from)}</td><td>${fmtDate(l.to)}</td><td>${l.days}</td><td><span class="badge badge-${l.status}">${l.status.charAt(0).toUpperCase()+l.status.slice(1)}</span></td><td style="color:#888">${l.remark||'—'}</td></tr>`).join('')}</tbody></table>`}</div>`;
+  const u=currentUser,clBal=getBalance(u.id);
+  const myLeaves=getAllLeaves().filter(l=>l.empId===u.id).sort((a,b)=>b.from.localeCompare(a.from));
+  return `<div class="card"><p class="card-title">Apply for leave</p>
+    <div class="row-gap">
+      <div class="flex-1 form-group"><label>Leave type</label>
+        <select id="lv-type"><option value="cl">CL — Casual Leave (balance: ${clBal} days)</option><option value="lwp">LWP — Leave Without Pay</option></select>
+      </div>
+      <div class="flex-1 form-group"><label>From date</label><input type="date" id="lv-from"/></div>
+      <div class="flex-1 form-group"><label>To date</label><input type="date" id="lv-to"/></div>
+    </div>
+    <div class="form-group"><label>Reason</label><textarea id="lv-reason" placeholder="Brief reason for leave"></textarea></div>
+    <div id="lv-msg"></div>
+    <button class="btn btn-primary" onclick="applyLeave()">Submit leave request</button>
+  </div>
+  <div class="card"><p class="card-title">My leave history</p>
+    ${myLeaves.length===0?'<p style="font-size:12px;color:#888">No leave requests yet.</p>':
+    `<table><thead><tr><th>Type</th><th>From</th><th>To</th><th>Days</th><th>Status</th><th>Remark</th></tr></thead><tbody>
+    ${myLeaves.map(l=>`<tr><td><span class="badge badge-${l.type}">${l.type.toUpperCase()}</span></td><td>${fmtDate(l.from)}</td><td>${fmtDate(l.to)}</td><td>${l.days}</td><td><span class="badge badge-${l.status}">${l.status.charAt(0).toUpperCase()+l.status.slice(1)}</span></td><td style="color:#888">${l.remark||'—'}</td></tr>`).join('')}
+    </tbody></table>`}
+  </div>`;
 }
+
 async function applyLeave(){
-  const type=document.getElementById('lv-type').value;const from=document.getElementById('lv-from').value;const to=document.getElementById('lv-to').value;const reason=document.getElementById('lv-reason').value.trim();const msg=document.getElementById('lv-msg');
-  if(!from||!to){msg.innerHTML='<div class="alert alert-danger">Please select from and to dates.</div>';return;}if(to<from){msg.innerHTML='<div class="alert alert-danger">To date cannot be before from date.</div>';return;}
-  const days=Math.round((new Date(to)-new Date(from))/86400000)+1;const clBal=getBalance(currentUser.id);if(type==='cl'&&clBal<days){msg.innerHTML=`<div class="alert alert-danger">Insufficient CL balance (${clBal} days available).</div>`;return;}
-  const leave={id:'LV'+Date.now(),empId:currentUser.id,type,from,to,days,reason,status:'pending',remark:'',appliedOn:today()};if(!state.leaves)state.leaves={};if(!state.leaves[currentUser.id])state.leaves[currentUser.id]=[];state.leaves[currentUser.id].push(leave);
-  await saveData();msg.innerHTML='<div class="alert alert-success">✓ Leave request submitted. Awaiting manager approval.</div>';setTimeout(()=>showPage('leaves'),1200);
+  const type=document.getElementById('lv-type').value;
+  const from=document.getElementById('lv-from').value;
+  const to=document.getElementById('lv-to').value;
+  const reason=document.getElementById('lv-reason').value.trim();
+  const msg=document.getElementById('lv-msg');
+  if(!from||!to){msg.innerHTML='<div class="alert alert-danger">Please select from and to dates.</div>';return;}
+  if(to<from){msg.innerHTML='<div class="alert alert-danger">To date cannot be before from date.</div>';return;}
+  const days=Math.round((new Date(to)-new Date(from))/86400000)+1;
+  const clBal=getBalance(currentUser.id);
+  if(type==='cl'&&clBal<days){msg.innerHTML=`<div class="alert alert-danger">Insufficient CL balance (${clBal} days available).</div>`;return;}
+  const leave={id:'LV'+Date.now(),empId:currentUser.id,type,from,to,days,reason,status:'pending',remark:'',appliedOn:today()};
+  if(!state.leaves)state.leaves={};
+  if(!state.leaves[currentUser.id])state.leaves[currentUser.id]=[];
+  state.leaves[currentUser.id].push(leave);
+  await saveData();
+  msg.innerHTML='<div class="alert alert-success">✓ Leave request submitted. Awaiting manager approval.</div>';
+  setTimeout(()=>showPage('leaves'),1200);
 }
+
+// ── APPROVALS ─────────────────────────────────────────────
 function renderApprovals(){
-  const u=currentUser;const allLeaves=getAllLeaves();const pending=allLeaves.filter(l=>l.status==='pending'&&u.team.includes(l.empId));const history=allLeaves.filter(l=>l.status!=='pending'&&u.team.includes(l.empId)).sort((a,b)=>b.from.localeCompare(a.from));
-  return `<div class="card"><p class="card-title">Pending approvals (${pending.length})</p>${pending.length===0?'<p style="font-size:12px;color:#888">No pending requests.</p>':''}${pending.map(l=>{const eu=USERS[l.empId];return `<div style="padding:12px 0;border-bottom:1px solid #f0f0f0"><div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px"><div><div style="display:flex;align-items:center;gap:8px;margin-bottom:5px"><div class="avatar" style="width:26px;height:26px;font-size:10px">${initials(eu?eu.name:l.empId)}</div><span style="font-weight:600;font-size:13px">${eu?eu.name:l.empId}</span><span class="team-tag">${eu?eu.team:''}</span></div><p style="font-size:11px;color:#666"><span class="badge badge-${l.type}">${l.type.toUpperCase()}</span> &nbsp;${fmtDate(l.from)} — ${fmtDate(l.to)} &nbsp;(${l.days} day${l.days>1?'s':''})</p><p style="font-size:11px;color:#888;margin-top:3px">Reason: ${l.reason||'—'}</p></div><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><input id="rmk-${l.id}" placeholder="Remark (optional)" style="padding:5px 8px;border:1px solid #d0d0d0;border-radius:5px;font-size:11px;width:150px;font-family:Segoe UI,sans-serif"/><button class="btn btn-success" style="font-size:11px;padding:5px 10px" onclick="decideLeave('${l.id}','approved')">✓ Approve</button><button class="btn btn-danger" style="font-size:11px;padding:5px 10px" onclick="decideLeave('${l.id}','rejected')">✗ Reject</button></div></div></div>`;}).join('')}</div><div class="card"><p class="card-title">Approval history</p>${history.length===0?'<p style="font-size:12px;color:#888">No history yet.</p>':`<table><thead><tr><th>Employee</th><th>Type</th><th>From</th><th>To</th><th>Days</th><th>Status</th><th>Remark</th></tr></thead><tbody>${history.slice(0,30).map(l=>{const eu=USERS[l.empId];return `<tr><td style="font-weight:600">${eu?eu.name:l.empId}</td><td><span class="badge badge-${l.type}">${l.type.toUpperCase()}</span></td><td>${fmtDate(l.from)}</td><td>${fmtDate(l.to)}</td><td>${l.days}</td><td><span class="badge badge-${l.status}">${l.status.charAt(0).toUpperCase()+l.status.slice(1)}</span></td><td style="color:#888">${l.remark||'—'}</td></tr>`;}).join('')}</tbody></table>`}</div>`;
+  const u=currentUser;
+  const allLeaves=getAllLeaves();
+  const pending=allLeaves.filter(l=>l.status==='pending'&&u.team.includes(l.empId));
+  const history=allLeaves.filter(l=>l.status!=='pending'&&u.team.includes(l.empId)).sort((a,b)=>b.from.localeCompare(a.from));
+  return `<div class="card"><p class="card-title">Pending approvals (${pending.length})</p>
+    ${pending.length===0?'<p style="font-size:12px;color:#888">No pending requests.</p>':''}
+    ${pending.map(l=>{const eu=USERS[l.empId];
+      return `<div style="padding:12px 0;border-bottom:1px solid #f0f0f0">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+              <div class="avatar" style="width:26px;height:26px;font-size:10px">${initials(eu?eu.name:l.empId)}</div>
+              <span style="font-weight:600;font-size:13px">${eu?eu.name:l.empId}</span><span class="team-tag">${eu?eu.team:''}</span>
+            </div>
+            <p style="font-size:11px;color:#666"><span class="badge badge-${l.type}">${l.type.toUpperCase()}</span> &nbsp;${fmtDate(l.from)} — ${fmtDate(l.to)} &nbsp;(${l.days} day${l.days>1?'s':''})</p>
+            <p style="font-size:11px;color:#888;margin-top:3px">Reason: ${l.reason||'—'}</p>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <input id="rmk-${l.id}" placeholder="Remark (optional)" style="padding:5px 8px;border:1px solid #d0d0d0;border-radius:5px;font-size:11px;width:150px;font-family:Segoe UI,sans-serif"/>
+            <button class="btn btn-success" style="font-size:11px;padding:5px 10px" onclick="decideLeave('${l.id}','approved')">✓ Approve</button>
+            <button class="btn btn-danger" style="font-size:11px;padding:5px 10px" onclick="decideLeave('${l.id}','rejected')">✗ Reject</button>
+          </div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>
+  <div class="card"><p class="card-title">Approval history</p>
+    ${history.length===0?'<p style="font-size:12px;color:#888">No history yet.</p>':
+    `<table><thead><tr><th>Employee</th><th>Type</th><th>From</th><th>To</th><th>Days</th><th>Status</th><th>Remark</th></tr></thead><tbody>
+    ${history.slice(0,30).map(l=>{const eu=USERS[l.empId];return `<tr><td style="font-weight:600">${eu?eu.name:l.empId}</td><td><span class="badge badge-${l.type}">${l.type.toUpperCase()}</span></td><td>${fmtDate(l.from)}</td><td>${fmtDate(l.to)}</td><td>${l.days}</td><td><span class="badge badge-${l.status}">${l.status.charAt(0).toUpperCase()+l.status.slice(1)}</span></td><td style="color:#888">${l.remark||'—'}</td></tr>`;}).join('')}
+    </tbody></table>`}
+  </div>`;
 }
+
 async function decideLeave(lid,decision){
-  if(!state.leaves)return;let found=null;Object.values(state.leaves).forEach(arr=>{const l=arr.find(x=>x.id===lid);if(l)found=l;});if(!found)return;
+  if(!state.leaves)return;
+  let found=null;
+  Object.values(state.leaves).forEach(arr=>{const l=arr.find(x=>x.id===lid);if(l)found=l;});
+  if(!found)return;
   found.status=decision;found.remark=document.getElementById('rmk-'+lid)?.value||'';
-  if(decision==='approved'){if(found.type==='cl'){const b=getBalance(found.empId);setBalance(found.empId,Math.max(0,b-found.days));}if(!state.attendance)state.attendance={};if(!state.attendance[found.empId])state.attendance[found.empId]={};const fd=new Date(found.from+'T12:00:00'),td2=new Date(found.to+'T12:00:00');for(let d=new Date(fd);d<=td2;d.setDate(d.getDate()+1)){state.attendance[found.empId][d.toISOString().slice(0,10)]=found.type;}}
-  await saveData();showPage(currentUser.role==='moderator'?'mod_approvals':'approvals');
+  if(decision==='approved'){
+    if(found.type==='cl'){const b=getBalance(found.empId);setBalance(found.empId,Math.max(0,b-found.days));}
+    if(!state.attendance)state.attendance={};
+    if(!state.attendance[found.empId])state.attendance[found.empId]={};
+    const fd=new Date(found.from+'T12:00:00'),td2=new Date(found.to+'T12:00:00');
+    for(let d=new Date(fd);d<=td2;d.setDate(d.getDate()+1)){state.attendance[found.empId][d.toISOString().slice(0,10)]=found.type;}
+  }
+  await saveData();
+  showPage(currentUser.role==='moderator'?'mod_approvals':'approvals');
 }
+
+// ── REPORTS ───────────────────────────────────────────────
 function renderReports(){
-  const isMod=currentUser.role==='moderator';const empList=isMod?getAllEmpIds():currentUser.team;const mon=today().slice(0,7);const year=parseInt(mon.slice(0,4)),month=parseInt(mon.slice(5,7))-1;const daysInMonth=new Date(year,month+1,0).getDate();let workingDays=0;for(let d=1;d<=daysInMonth;d++){const dow=new Date(year,month,d).getDay();if(dow!==0&&dow!==6)workingDays++;}const mon_label=new Date(mon+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});let rows='';
-  empList.forEach(eid=>{const eu=USERS[eid];if(!eu)return;const att=state.attendance[eid]||{};let present=0,cl=0,lwp=0,absent=0,totalMins=0,punchDays=0;for(let d=1;d<=daysInMonth;d++){const ds=`${mon}-${String(d).padStart(2,'0')}`;const dow=new Date(year,month,d).getDay();if(dow===0||dow===6)continue;const s=att[ds];if(s==='present')present++;else if(s==='cl')cl++;else if(s==='lwp')lwp++;else absent++;const p=getPunch(eid,ds);if(p&&p.in&&p.out){const toMin=t=>{const[h,m,s2]=t.split(':').map(Number);return h*60+m+(s2||0)/60;};const diff=toMin(p.out)-toMin(p.in);if(diff>0){totalMins+=diff;punchDays++;}}}const avgH=punchDays>0?Math.floor(totalMins/punchDays/60)+'h '+Math.round((totalMins/punchDays)%60)+'m':'—';const mgr=USERS[eu.manager];rows+=`<tr><td style="font-weight:600">${eu.name}</td><td style="color:#888">${eu.id}</td><td><span class="team-tag">${eu.team}</span></td>${isMod?`<td>${mgr?mgr.name:'—'}</td>`:''}<td style="text-align:center">${workingDays}</td><td style="text-align:center;color:#107c10;font-weight:600">${present}</td><td style="text-align:center;color:#0078d4">${cl}</td><td style="text-align:center;color:#ca5010">${lwp}</td><td style="text-align:center;color:#d13438">${absent}</td><td style="text-align:center">${getBalance(eid)}</td><td style="text-align:center;color:#0078d4">${avgH}</td></tr>`;});
-  return `<div class="card"><p class="card-title">${isMod?'Organisation-wide':'Team'} attendance report — ${mon_label}</p><table><thead><tr><th>Name</th><th>Login ID</th><th>Team</th>${isMod?'<th>Manager</th>':''}<th style="text-align:center">Working days</th><th style="text-align:center">Present</th><th style="text-align:center">CL</th><th style="text-align:center">LWP</th><th style="text-align:center">Absent</th><th style="text-align:center">CL balance</th><th style="text-align:center">Avg hours/day</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  const isMod=currentUser.role==='moderator';
+  const empList=isMod?getAllEmpIds():currentUser.team;
+  const mon=today().slice(0,7);
+  const year=parseInt(mon.slice(0,4)),month=parseInt(mon.slice(5,7))-1;
+  const daysInMonth=new Date(year,month+1,0).getDate();
+  let workingDays=0;
+  for(let d=1;d<=daysInMonth;d++){const dow=new Date(year,month,d).getDay();if(dow!==0&&dow!==6)workingDays++;}
+  const mon_label=new Date(mon+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+  let rows='';
+  empList.forEach(eid=>{const eu=USERS[eid];if(!eu)return;
+    const att=state.attendance[eid]||{};
+    let present=0,cl=0,lwp=0,absent=0,totalMins=0,punchDays=0;
+    for(let d=1;d<=daysInMonth;d++){
+      const ds=`${mon}-${String(d).padStart(2,'0')}`;
+      const dow=new Date(year,month,d).getDay();if(dow===0||dow===6)continue;
+      const s=att[ds];
+      if(s==='present')present++;else if(s==='cl')cl++;else if(s==='lwp')lwp++;else absent++;
+      const p=getPunch(eid,ds);
+      if(p&&p.in&&p.out){
+        const toMin=t=>{const[h,m,s2]=t.split(':').map(Number);return h*60+m+(s2||0)/60;};
+        const diff=toMin(p.out)-toMin(p.in);
+        if(diff>0){totalMins+=diff;punchDays++;}
+      }
+    }
+    const avgH=punchDays>0?Math.floor(totalMins/punchDays/60)+'h '+Math.round((totalMins/punchDays)%60)+'m':'—';
+    const mgr=USERS[eu.manager];
+    rows+=`<tr>
+      <td style="font-weight:600">${eu.name}</td><td style="color:#888">${eu.id}</td>
+      <td><span class="team-tag">${eu.team}</span></td>
+      ${isMod?`<td>${mgr?mgr.name:'—'}</td>`:''}
+      <td style="text-align:center">${workingDays}</td>
+      <td style="text-align:center;color:#107c10;font-weight:600">${present}</td>
+      <td style="text-align:center;color:#0078d4">${cl}</td>
+      <td style="text-align:center;color:#ca5010">${lwp}</td>
+      <td style="text-align:center;color:#d13438">${absent}</td>
+      <td style="text-align:center">${getBalance(eid)}</td>
+      <td style="text-align:center;color:#0078d4">${avgH}</td>
+    </tr>`;
+  });
+  return `<div class="card"><p class="card-title">${isMod?'Organisation-wide':'Team'} attendance report — ${mon_label}</p>
+    <table><thead><tr>
+      <th>Name</th><th>Login ID</th><th>Team</th>${isMod?'<th>Manager</th>':''}
+      <th style="text-align:center">Working days</th><th style="text-align:center">Present</th>
+      <th style="text-align:center">CL</th><th style="text-align:center">LWP</th>
+      <th style="text-align:center">Absent</th><th style="text-align:center">CL balance</th>
+      <th style="text-align:center">Avg hours/day</th>
+    </tr></thead><tbody>${rows}</tbody></table>
+  </div>`;
 }
+
+// ── CHANGE PASSWORD ───────────────────────────────────────
 function renderChangePw(){
-  return `<div class="card" style="max-width:420px"><p class="card-title">Change password</p><div class="form-group"><label>Current password</label><input type="password" id="pw-current" placeholder="Enter current password"/></div><div class="form-group"><label>New password</label><input type="password" id="pw-new" placeholder="Min. 6 characters"/></div><div class="form-group"><label>Confirm new password</label><input type="password" id="pw-confirm" placeholder="Re-enter new password"/></div><div id="pw-msg"></div><button class="btn btn-primary" onclick="changePassword()">Update password</button></div>`;
+  return `<div class="card" style="max-width:420px"><p class="card-title">Change password</p>
+    <div class="form-group"><label>Current password</label><input type="password" id="pw-current" placeholder="Enter current password"/></div>
+    <div class="form-group"><label>New password</label><input type="password" id="pw-new" placeholder="Min. 6 characters"/></div>
+    <div class="form-group"><label>Confirm new password</label><input type="password" id="pw-confirm" placeholder="Re-enter new password"/></div>
+    <div id="pw-msg"></div>
+    <button class="btn btn-primary" onclick="changePassword()">Update password</button>
+  </div>`;
 }
+
 async function changePassword(){
-  const current=document.getElementById('pw-current').value;const nw=document.getElementById('pw-new').value;const confirm2=document.getElementById('pw-confirm').value;const msg=document.getElementById('pw-msg');const activePw=getCurrentPw(currentUser.id);
-  if(current!==activePw){msg.innerHTML='<div class="alert alert-danger">Current password is incorrect.</div>';return;}if(nw.length<6){msg.innerHTML='<div class="alert alert-danger">New password must be at least 6 characters.</div>';return;}if(nw!==confirm2){msg.innerHTML='<div class="alert alert-danger">New passwords do not match.</div>';return;}if(nw===current){msg.innerHTML='<div class="alert alert-danger">New password must differ from current password.</div>';return;}
-  if(!state.passwords)state.passwords={};state.passwords[currentUser.id]=nw;await saveData();msg.innerHTML='<div class="alert alert-success">✓ Password updated successfully.</div>';document.getElementById('pw-current').value='';document.getElementById('pw-new').value='';document.getElementById('pw-confirm').value='';
+  const current=document.getElementById('pw-current').value;
+  const nw=document.getElementById('pw-new').value;
+  const confirm=document.getElementById('pw-confirm').value;
+  const msg=document.getElementById('pw-msg');
+  const activePw=getCurrentPw(currentUser.id);
+  if(current!==activePw){msg.innerHTML='<div class="alert alert-danger">Current password is incorrect.</div>';return;}
+  if(nw.length<6){msg.innerHTML='<div class="alert alert-danger">New password must be at least 6 characters.</div>';return;}
+  if(nw!==confirm){msg.innerHTML='<div class="alert alert-danger">New passwords do not match.</div>';return;}
+  if(nw===current){msg.innerHTML='<div class="alert alert-danger">New password must differ from current password.</div>';return;}
+  if(!state.passwords)state.passwords={};
+  state.passwords[currentUser.id]=nw;
+  await saveData();
+  msg.innerHTML='<div class="alert alert-success">✓ Password updated successfully.</div>';
+  document.getElementById('pw-current').value='';document.getElementById('pw-new').value='';document.getElementById('pw-confirm').value='';
 }
 </script>
 </body>
 </html>
+Switch to GitHub API storage

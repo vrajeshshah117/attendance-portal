@@ -90,6 +90,7 @@ tr:hover td{background:#fafafa}
 .punch-out-val{color:#d13438}
 .punch-duration{font-size:13px;color:#0078d4;font-weight:600;margin-top:2px}
 .hours-chip{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;background:#e3f2fd;color:#0078d4;margin-left:6px}
+.badge-regularization{background:#e3f2fd;color:#0078d4}
 #app-root{display:none}
 </style>
 </head>
@@ -181,7 +182,7 @@ const USERS={
 
 function getAllEmpIds(){return Object.values(USERS).filter(u=>u.role==='employee').map(u=>u.id);}
 
-let state={attendance:{},leaves:{},balances:{},passwords:{},punches:{}};
+let state={attendance:{},leaves:{},balances:{},passwords:{},punches:{},regularizations:{}};
 let currentUser=null;
 let clockInterval=null;
 
@@ -273,7 +274,34 @@ async function doLogin(){
   const av=document.getElementById('hdr-av');
   av.textContent=initials(u.name);
   av.className='avatar'+(u.role==='moderator'?' mod':u.role==='manager'?' mgr':'');
+  await autoMarkAbsent();
   buildNav();showPage('dashboard');
+}
+
+// ── Auto-mark absent for previous working days ───────────
+async function autoMarkAbsent(){
+  const td=today();
+  const empIds=getAllEmpIds();
+  let changed=false;
+  // Check last 7 calendar days (covers weekends gaps)
+  for(let i=1;i<=7;i++){
+    const d=new Date();d.setDate(d.getDate()-i);
+    const dow=d.getDay();
+    if(dow===0||dow===6) continue; // skip weekends
+    const ds=d.toISOString().slice(0,10);
+    empIds.forEach(eid=>{
+      if(!state.attendance[eid]) state.attendance[eid]={};
+      if(!state.attendance[eid][ds]){
+        // No attendance marked and no punch in → mark absent
+        const p=getPunch(eid,ds);
+        if(!p||!p.in){
+          state.attendance[eid][ds]='absent';
+          changed=true;
+        }
+      }
+    });
+  }
+  if(changed) await saveData();
 }
 
 function doLogout(){
@@ -288,11 +316,11 @@ function doLogout(){
 function buildNav(){
   let tabs=[];
   if(currentUser.role==='moderator')
-    tabs=[{k:'dashboard',l:'Overview'},{k:'mod_daily',l:'Daily Status'},{k:'mod_punches',l:'Punch Log'},{k:'mod_leaves',l:'All Leaves'},{k:'mod_approvals',l:'Override Approvals'},{k:'reports',l:'Full Report'},{k:'change_pw',l:'Change Password'}];
+    tabs=[{k:'dashboard',l:'Overview'},{k:'mod_daily',l:'Daily Status'},{k:'mod_punches',l:'Punch Log'},{k:'mod_leaves',l:'All Leaves'},{k:'mod_approvals',l:'Override Approvals'},{k:'mod_regularizations',l:'Regularizations'},{k:'reports',l:'Full Report'},{k:'change_pw',l:'Change Password'}];
   else if(currentUser.role==='manager')
-    tabs=[{k:'dashboard',l:'Dashboard'},{k:'attendance',l:'Attendance & Punch'},{k:'leaves',l:'My Leaves'},{k:'approvals',l:'Approvals'},{k:'reports',l:'Team Reports'},{k:'change_pw',l:'Change Password'}];
+    tabs=[{k:'dashboard',l:'Dashboard'},{k:'attendance',l:'Attendance & Punch'},{k:'leaves',l:'My Leaves'},{k:'approvals',l:'Approvals'},{k:'regularize_approvals',l:'Regularizations'},{k:'reports',l:'Team Reports'},{k:'change_pw',l:'Change Password'}];
   else
-    tabs=[{k:'dashboard',l:'Dashboard'},{k:'attendance',l:'Attendance & Punch'},{k:'leaves',l:'My Leaves'},{k:'change_pw',l:'Change Password'}];
+    tabs=[{k:'dashboard',l:'Dashboard'},{k:'attendance',l:'Attendance & Punch'},{k:'leaves',l:'My Leaves'},{k:'regularize',l:'Regularize'},{k:'change_pw',l:'Change Password'}];
   document.getElementById('nav-bar').innerHTML=tabs.map(t=>`<button class="nav-btn" data-k="${t.k}" onclick="showPage('${t.k}')">${t.l}</button>`).join('');
 }
 
@@ -310,6 +338,9 @@ function showPage(k){
   else if(k==='mod_punches') c.innerHTML=renderModPunches();
   else if(k==='mod_leaves') c.innerHTML=renderModLeaves();
   else if(k==='mod_approvals') c.innerHTML=renderModApprovals();
+  else if(k==='regularize') c.innerHTML=renderRegularize();
+  else if(k==='regularize_approvals') c.innerHTML=renderRegularizeApprovals();
+  else if(k==='mod_regularizations') c.innerHTML=renderModRegularizations();
   else if(k==='change_pw') c.innerHTML=renderChangePw();
 }
 
@@ -854,6 +885,222 @@ function renderReports(){
       <th style="text-align:center">Avg hours/day</th>
     </tr></thead><tbody>${rows}</tbody></table>
   </div>`;
+}
+
+// ── REGULARIZATION ────────────────────────────────────────
+function getAllRegularizations(){return state.regularizations?Object.values(state.regularizations).flat():[];}
+
+function renderRegularize(){
+  const u=currentUser;
+  const myRegs=getAllRegularizations().filter(r=>r.empId===u.id).sort((a,b)=>b.appliedOn.localeCompare(a.appliedOn));
+  // Build date options for last 30 days (only working days without attendance/punch)
+  let dateOpts='';
+  for(let i=1;i<=30;i++){
+    const d=new Date();d.setDate(d.getDate()-i);
+    const dow=d.getDay();if(dow===0||dow===6)continue;
+    const ds=d.toISOString().slice(0,10);
+    dateOpts+=`<option value="${ds}">${fmtDate(ds)}</option>`;
+  }
+  return `<div class="card"><p class="card-title">Request Attendance Regularization</p>
+    <p style="font-size:12px;color:#666;margin-bottom:14px">Use this form if you missed marking attendance, forgot to punch in/out, or need to correct your attendance record for a past date. Your manager will review and approve the request.</p>
+    <div class="row-gap">
+      <div class="flex-1 form-group"><label>Date to regularize</label>
+        <select id="reg-date">${dateOpts}</select>
+      </div>
+      <div class="flex-1 form-group"><label>Regularization type</label>
+        <select id="reg-type">
+          <option value="mark_present">Mark as Present (missed marking)</option>
+          <option value="add_punch_in">Add Punch In time</option>
+          <option value="add_punch_out">Add Punch Out time</option>
+          <option value="add_both">Add Punch In & Out times</option>
+        </select>
+      </div>
+    </div>
+    <div id="reg-time-fields" class="row-gap" style="display:none">
+      <div class="flex-1 form-group"><label>Punch In time</label><input type="time" id="reg-in-time"/></div>
+      <div class="flex-1 form-group"><label>Punch Out time</label><input type="time" id="reg-out-time"/></div>
+    </div>
+    <div class="form-group"><label>Reason</label><textarea id="reg-reason" placeholder="Explain why regularization is needed (e.g., forgot to punch in, system was down, etc.)"></textarea></div>
+    <div id="reg-msg"></div>
+    <button class="btn btn-primary" onclick="submitRegularization()">Submit Regularization Request</button>
+    <script>
+      document.getElementById('reg-type').addEventListener('change',function(){
+        const v=this.value;
+        const tf=document.getElementById('reg-time-fields');
+        tf.style.display=(v==='mark_present')?'none':'flex';
+        document.getElementById('reg-in-time').disabled=(v==='add_punch_out');
+        document.getElementById('reg-out-time').disabled=(v==='add_punch_in');
+      });
+    <\/script>
+  </div>
+  <div class="card"><p class="card-title">My Regularization History</p>
+    ${myRegs.length===0?'<p style="font-size:12px;color:#888">No regularization requests yet.</p>':
+    `<table><thead><tr><th>Date</th><th>Type</th><th>Punch In</th><th>Punch Out</th><th>Reason</th><th>Status</th><th>Remark</th></tr></thead><tbody>
+    ${myRegs.map(r=>`<tr>
+      <td>${fmtDate(r.date)}</td>
+      <td>${r.type==='mark_present'?'Mark Present':r.type==='add_punch_in'?'Add Punch In':r.type==='add_punch_out'?'Add Punch Out':'Add Both'}</td>
+      <td style="color:#107c10">${r.punchIn?fmtTime12(r.punchIn+':00'):'—'}</td>
+      <td style="color:#d13438">${r.punchOut?fmtTime12(r.punchOut+':00'):'—'}</td>
+      <td style="color:#888">${r.reason||'—'}</td>
+      <td><span class="badge badge-${r.status}">${r.status.charAt(0).toUpperCase()+r.status.slice(1)}</span></td>
+      <td style="color:#888">${r.remark||'—'}</td>
+    </tr>`).join('')}
+    </tbody></table>`}
+  </div>`;
+}
+
+async function submitRegularization(){
+  const date=document.getElementById('reg-date').value;
+  const type=document.getElementById('reg-type').value;
+  const punchIn=document.getElementById('reg-in-time').value;
+  const punchOut=document.getElementById('reg-out-time').value;
+  const reason=document.getElementById('reg-reason').value.trim();
+  const msg=document.getElementById('reg-msg');
+
+  if(!date){msg.innerHTML='<div class="alert alert-danger">Please select a date.</div>';return;}
+  if(!reason){msg.innerHTML='<div class="alert alert-danger">Please provide a reason for regularization.</div>';return;}
+  if((type==='add_punch_in'||type==='add_both')&&!punchIn){msg.innerHTML='<div class="alert alert-danger">Please enter punch in time.</div>';return;}
+  if((type==='add_punch_out'||type==='add_both')&&!punchOut){msg.innerHTML='<div class="alert alert-danger">Please enter punch out time.</div>';return;}
+  if(type==='add_both'&&punchOut<=punchIn){msg.innerHTML='<div class="alert alert-danger">Punch out time must be after punch in time.</div>';return;}
+
+  // Check for duplicate pending request
+  const existing=getAllRegularizations().filter(r=>r.empId===currentUser.id&&r.date===date&&r.status==='pending');
+  if(existing.length>0){msg.innerHTML='<div class="alert alert-warning">You already have a pending regularization request for this date.</div>';return;}
+
+  const reg={
+    id:'REG'+Date.now(),
+    empId:currentUser.id,
+    date,
+    type,
+    punchIn:(type==='add_punch_in'||type==='add_both')?punchIn:'',
+    punchOut:(type==='add_punch_out'||type==='add_both')?punchOut:'',
+    reason,
+    status:'pending',
+    remark:'',
+    appliedOn:today()
+  };
+
+  if(!state.regularizations) state.regularizations={};
+  if(!state.regularizations[currentUser.id]) state.regularizations[currentUser.id]=[];
+  state.regularizations[currentUser.id].push(reg);
+  await saveData();
+  msg.innerHTML='<div class="alert alert-success">✓ Regularization request submitted. Awaiting manager approval.</div>';
+  setTimeout(()=>showPage('regularize'),1200);
+}
+
+// ── Manager Regularization Approvals ─────────────────────
+function renderRegularizeApprovals(){
+  const u=currentUser;
+  const allRegs=getAllRegularizations();
+  const pending=allRegs.filter(r=>r.status==='pending'&&u.team.includes(r.empId));
+  const history=allRegs.filter(r=>r.status!=='pending'&&u.team.includes(r.empId)).sort((a,b)=>b.date.localeCompare(a.date));
+  return `<div class="card"><p class="card-title">Pending Regularization Requests (${pending.length})</p>
+    ${pending.length===0?'<p style="font-size:12px;color:#888">No pending regularization requests.</p>':''}
+    ${pending.map(r=>{const eu=USERS[r.empId];
+      return `<div style="padding:12px 0;border-bottom:1px solid #f0f0f0">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+              <div class="avatar" style="width:26px;height:26px;font-size:10px">${initials(eu?eu.name:r.empId)}</div>
+              <span style="font-weight:600;font-size:13px">${eu?eu.name:r.empId}</span>
+              <span class="team-tag">${eu?eu.team:''}</span>
+            </div>
+            <p style="font-size:11px;color:#666"><span class="badge badge-regularization">${r.type==='mark_present'?'Mark Present':r.type==='add_punch_in'?'Add Punch In':r.type==='add_punch_out'?'Add Punch Out':'Add Both'}</span> &nbsp;Date: <strong>${fmtDate(r.date)}</strong></p>
+            ${r.punchIn?`<p style="font-size:11px;color:#107c10;margin-top:3px">Punch In: ${fmtTime12(r.punchIn+':00')}</p>`:''}
+            ${r.punchOut?`<p style="font-size:11px;color:#d13438;margin-top:2px">Punch Out: ${fmtTime12(r.punchOut+':00')}</p>`:''}
+            <p style="font-size:11px;color:#888;margin-top:3px">Reason: ${r.reason||'—'}</p>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <input id="rrmk-${r.id}" placeholder="Remark (optional)" style="padding:5px 8px;border:1px solid #d0d0d0;border-radius:5px;font-size:11px;width:150px;font-family:Segoe UI,sans-serif"/>
+            <button class="btn btn-success" style="font-size:11px;padding:5px 10px" onclick="decideRegularization('${r.id}','approved')">✓ Approve</button>
+            <button class="btn btn-danger" style="font-size:11px;padding:5px 10px" onclick="decideRegularization('${r.id}','rejected')">✗ Reject</button>
+          </div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>
+  <div class="card"><p class="card-title">Regularization History</p>
+    ${history.length===0?'<p style="font-size:12px;color:#888">No history yet.</p>':
+    `<table><thead><tr><th>Employee</th><th>Date</th><th>Type</th><th>Punch In</th><th>Punch Out</th><th>Status</th><th>Remark</th></tr></thead><tbody>
+    ${history.slice(0,30).map(r=>{const eu=USERS[r.empId];return `<tr>
+      <td style="font-weight:600">${eu?eu.name:r.empId}</td>
+      <td>${fmtDate(r.date)}</td>
+      <td>${r.type==='mark_present'?'Mark Present':r.type==='add_punch_in'?'Add Punch In':r.type==='add_punch_out'?'Add Punch Out':'Add Both'}</td>
+      <td style="color:#107c10">${r.punchIn?fmtTime12(r.punchIn+':00'):'—'}</td>
+      <td style="color:#d13438">${r.punchOut?fmtTime12(r.punchOut+':00'):'—'}</td>
+      <td><span class="badge badge-${r.status}">${r.status.charAt(0).toUpperCase()+r.status.slice(1)}</span></td>
+      <td style="color:#888">${r.remark||'—'}</td>
+    </tr>`;}).join('')}
+    </tbody></table>`}
+  </div>`;
+}
+
+// ── Moderator Regularization View ────────────────────────
+function renderModRegularizations(){
+  const allRegs=getAllRegularizations().sort((a,b)=>b.appliedOn.localeCompare(a.appliedOn));
+  const pending=allRegs.filter(r=>r.status==='pending');
+  return `<div class="card"><p class="card-title">All Regularization Requests — Organisation Wide (${pending.length} pending)</p>
+    <div class="filter-bar">
+      <label style="font-size:12px;color:#666">Status:</label>
+      <select id="rf-status" onchange="filterRegTable()"><option value="All">All</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>
+    </div>
+    <table><thead><tr><th>Employee</th><th>Team</th><th>Manager</th><th>Date</th><th>Type</th><th>Punch In</th><th>Punch Out</th><th>Reason</th><th>Status</th><th>Action</th></tr></thead>
+    <tbody id="reg-mod-tbody">
+    ${allRegs.map(r=>{const eu=USERS[r.empId],mgr=eu?USERS[eu.manager]:null;
+      return `<tr data-status="${r.status}">
+        <td style="font-weight:600">${eu?eu.name:r.empId}</td>
+        <td><span class="team-tag">${eu?eu.team:''}</span></td>
+        <td>${mgr?mgr.name:'—'}</td>
+        <td>${fmtDate(r.date)}</td>
+        <td>${r.type==='mark_present'?'Mark Present':r.type==='add_punch_in'?'Punch In':r.type==='add_punch_out'?'Punch Out':'Both'}</td>
+        <td style="color:#107c10">${r.punchIn?fmtTime12(r.punchIn+':00'):'—'}</td>
+        <td style="color:#d13438">${r.punchOut?fmtTime12(r.punchOut+':00'):'—'}</td>
+        <td style="color:#888;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${r.reason||''}">${r.reason||'—'}</td>
+        <td><span class="badge badge-${r.status}">${r.status.charAt(0).toUpperCase()+r.status.slice(1)}</span></td>
+        <td>${r.status==='pending'?`<button class="btn btn-success" style="font-size:10px;padding:3px 8px" onclick="decideRegularization('${r.id}','approved')">✓</button>
+        <button class="btn btn-danger" style="font-size:10px;padding:3px 8px" onclick="decideRegularization('${r.id}','rejected')">✗</button>`:r.remark||'—'}</td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>
+  </div>`;
+}
+
+function filterRegTable(){
+  const status=document.getElementById('rf-status')?.value||'All';
+  document.querySelectorAll('#reg-mod-tbody tr').forEach(row=>{
+    row.style.display=(status==='All'||row.dataset.status===status)?'':'none';
+  });
+}
+
+async function decideRegularization(rid,decision){
+  if(!state.regularizations)return;
+  let found=null;
+  Object.values(state.regularizations).forEach(arr=>{const r=arr.find(x=>x.id===rid);if(r)found=r;});
+  if(!found)return;
+  found.status=decision;
+  found.remark=document.getElementById('rrmk-'+rid)?.value||'';
+  if(decision==='approved'){
+    const eid=found.empId, ds=found.date;
+    // Mark present if needed
+    if(!state.attendance[eid]) state.attendance[eid]={};
+    if(found.type==='mark_present'||found.type==='add_both'||found.type==='add_punch_in'){
+      state.attendance[eid][ds]='present';
+    }
+    // Add punch times if provided
+    if(found.punchIn||found.punchOut){
+      if(!state.punches) state.punches={};
+      if(!state.punches[eid]) state.punches[eid]={};
+      if(!state.punches[eid][ds]) state.punches[eid][ds]={in:null,out:null};
+      if(found.punchIn) state.punches[eid][ds].in=found.punchIn+':00';
+      if(found.punchOut) state.punches[eid][ds].out=found.punchOut+':00';
+      // Also mark present if punch data added
+      state.attendance[eid][ds]='present';
+    }
+  }
+  await saveData();
+  // Refresh appropriate page
+  if(currentUser.role==='moderator') showPage('mod_regularizations');
+  else showPage('regularize_approvals');
 }
 
 // ── CHANGE PASSWORD ───────────────────────────────────────

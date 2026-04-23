@@ -1,1 +1,18 @@
-{"attendance":{},"leaves":{},"balances":{},"passwords":{},"punches":{}}
+{
+  "attendance": {
+    "HEMRAJ.S": {
+      "2026-04-23": "present"
+    }
+  },
+  "leaves": {},
+  "balances": {},
+  "passwords": {},
+  "punches": {
+    "HEMRAJ.S": {
+      "2026-04-23": {
+        "in": "09:49:33",
+        "out": null
+      }
+    }
+  }
+}

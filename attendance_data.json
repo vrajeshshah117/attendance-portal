@@ -4,7 +4,22 @@
       "2026-04-23": "present"
     }
   },
-  "leaves": {},
+  "leaves": {
+    "HEMRAJ.S": [
+      {
+        "id": "LV1776917987551",
+        "empId": "HEMRAJ.S",
+        "type": "cl",
+        "from": "2026-04-24",
+        "to": "2026-04-24",
+        "days": 1,
+        "reason": "test",
+        "status": "pending",
+        "remark": "",
+        "appliedOn": "2026-04-23"
+      }
+    ]
+  },
   "balances": {},
   "passwords": {},
   "punches": {

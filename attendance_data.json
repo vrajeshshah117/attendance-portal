@@ -2,6 +2,9 @@
   "attendance": {
     "HEMRAJ.S": {
       "2026-04-23": "present"
+    },
+    "SANDHYA.D": {
+      "2026-04-23": "present"
     }
   },
   "leaves": {
@@ -26,6 +29,12 @@
     "HEMRAJ.S": {
       "2026-04-23": {
         "in": "09:49:33",
+        "out": null
+      }
+    },
+    "SANDHYA.D": {
+      "2026-04-23": {
+        "in": "09:53:01",
         "out": null
       }
     }

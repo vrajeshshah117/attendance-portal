@@ -84,7 +84,7 @@
         "to": "2026-04-24",
         "days": 1,
         "reason": "test",
-        "status": "pending",
+        "status": "rejected",
         "remark": "",
         "appliedOn": "2026-04-23"
       }

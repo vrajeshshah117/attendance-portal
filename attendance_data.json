@@ -136,7 +136,9 @@
     ]
   },
   "balances": {},
-  "passwords": {},
+  "passwords": {
+    "SANDHYA.D": "Sandhya@01"
+  },
   "punches": {
     "HEMRAJ.S": {
       "2026-04-23": {
